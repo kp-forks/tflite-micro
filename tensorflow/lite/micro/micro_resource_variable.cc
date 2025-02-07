@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -63,6 +63,7 @@ int MicroResourceVariables::CreateIdIfNoneFound(const char* container,
   resource_variables_[resource_id].shared_name = shared_name;
   resource_variables_[resource_id].resource_buffer = nullptr;
   resource_variables_[resource_id].bytes = 0;
+  resource_variables_[resource_id].default_value = 0;
   return resource_id;
 }
 
@@ -96,16 +97,24 @@ TfLiteStatus MicroResourceVariables::Allocate(int id, TfLiteContext* context,
       MicroPrintf("Failed to allocate resource buffer.");
       return kTfLiteError;
     }
-    // Zero out resource buffers by deafult. Buffers can be initialized to
-    // nonzero values using ASSIGN_VARIABLE.
-    memset(variable.resource_buffer, 0, variable.bytes);
+    // Set resource buffers to the zero_point by default. Buffers can be
+    // initialized to nonzero values using ASSIGN_VARIABLE.
+    // See comment#2 in b/269648474 for more details why we use zero_point.
+    if (tensor->quantization.params != nullptr) {
+      auto* quantization_data = reinterpret_cast<TfLiteAffineQuantization*>(
+          tensor->quantization.params);
+      int8_t zero_point = quantization_data->zero_point[0].data[0];
+      variable.default_value = zero_point;
+    }
+    // TODO(b/269669735): Explains why casting zero_point to int8 and memset.
+    memset(variable.resource_buffer, variable.default_value, variable.bytes);
   }
 
   return kTfLiteOk;
 }
 
-TfLiteStatus MicroResourceVariables::Assign(int id,
-                                            const TfLiteEvalTensor* tensor) {
+TfLiteStatus MicroResourceVariables::Assign(int id, size_t count_bytes,
+                                            const void* input_buffer) {
   if (id < 0 || id >= num_resource_variables_) {
     MicroPrintf("Attempting to read non-existent resource variable %d", id);
     return kTfLiteError;
@@ -119,15 +128,17 @@ TfLiteStatus MicroResourceVariables::Assign(int id,
         "with a TfLiteTensor first.");
     return kTfLiteError;
   }
-  TFLITE_DCHECK(EvalTensorBytes(tensor) == variable.bytes);
-  memcpy(variable.resource_buffer, tensor->data.raw, variable.bytes);
+  TFLITE_DCHECK(count_bytes == variable.bytes);
+  TFLITE_DCHECK(input_buffer != nullptr);
+  memcpy(variable.resource_buffer, input_buffer, variable.bytes);
   return kTfLiteOk;
 }
 
 TfLiteStatus MicroResourceVariables::ResetAll() {
   for (int i = 0; i < num_resource_variables_; i++) {
     MicroResourceVariable variable = resource_variables_[i];
-    memset(variable.resource_buffer, 0, variable.bytes);
+    // TODO(b/269669735): Explains why casting zero_point to int8 and memset.
+    memset(variable.resource_buffer, variable.default_value, variable.bytes);
   }
   return kTfLiteOk;
 }

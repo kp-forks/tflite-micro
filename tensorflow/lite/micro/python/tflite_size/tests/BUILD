@@ -1,3 +1,4 @@
+load("@rules_python//python:defs.bzl", "py_test")
 load("@tflm_pip_deps//:requirements.bzl", "requirement")
 
 licenses(["notice"])
@@ -25,7 +26,7 @@ py_test(
         "noubsan",
     ],
     deps = [
-        requirement("tensorflow-cpu"),
+        requirement("tensorflow"),
         "//tensorflow/lite/micro/python/tflite_size/src:flatbuffer_size",
     ],
 )

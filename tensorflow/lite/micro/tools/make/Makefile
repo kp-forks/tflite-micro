@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -60,9 +60,21 @@ endif
 # Specify which specialized kernel implementation should be pulled in.
 OPTIMIZED_KERNEL_DIR :=
 
+# Optimize kernels for speed or memory. This is similar but not the same as KERNEL_OPTIMIZATION_LEVEL and
+# CORE_OPTIMIZATION_LEVEL, which specify compiler optimization level.
+# Instead this enables a kernel to provide multiple implementations that is configured at build time.
+# An example could be a kernel requiring a bigger scratch buffer for certain use cases.
+# The example kernel would have a smaller scratch buffer usage when building for size.
+# Vice versa it would use more scratch buffer when building for speed and would be more performant.
+# Note that this is optional. If having one implementation, nothing needs to be done.
+# OPTIMIZE_KERNELS_FOR has only two valid values, KERNELS_OPTIMIZED_FOR_SIZE and KERNELS_OPTIMIZED_FOR_SPEED where the
+# former is default.
+OPTIMIZE_KERNELS_FOR := KERNELS_OPTIMIZED_FOR_SPEED
+
 # Override this variable from the command line in case the optimized kernels are
 # in a different directory.
 OPTIMIZED_KERNEL_DIR_PREFIX := $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels
+OPTIMIZED_SIGNAL_KERNEL_DIR_PREFIX := $(TENSORFLOW_ROOT)signal/micro/kernels
 
 # Specify which co-processor's kernel implementation should be pulled in.
 # If the same kernel is implemented in both kernels/OPTIMIZED_KERNEL_DIR and
@@ -80,8 +92,10 @@ DOWNLOADS_DIR := $(MAKEFILE_DIR)/downloads
 
 INCLUDES := \
 -I. \
+-I$(DOWNLOADS_DIR) \
 -I$(DOWNLOADS_DIR)/gemmlowp \
 -I$(DOWNLOADS_DIR)/flatbuffers/include \
+-I$(DOWNLOADS_DIR)/kissfft \
 -I$(DOWNLOADS_DIR)/ruy
 
 ifneq ($(TENSORFLOW_ROOT),)
@@ -96,7 +110,7 @@ TEST_SCRIPT :=
 
 MICROLITE_LIBS := -lm
 
-# For the optimized_kernel_dir, and co-processor as specified on the
+# For the optimized_kernel_dir, co-processor and optimize_kernels_for as specified on the
 # command line we add -D<tag> to the cflags to allow for #idefs in the code.
 #
 # We apply the following transformations (via the tr command):
@@ -108,6 +122,10 @@ endif
 
 ifneq ($(CO_PROCESSOR),)
   ADDITIONAL_DEFINES += -D$(shell echo $(CO_PROCESSOR) | tr [a-z] [A-Z])
+endif
+
+ifneq ($(OPTIMIZE_KERNELS_FOR),)
+  ADDITIONAL_DEFINES += -D$(shell echo $(OPTIMIZE_KERNELS_FOR) | tr [a-z] [A-Z])
 endif
 
 ifeq ($(TOOLCHAIN), armclang)
@@ -128,7 +146,6 @@ endif
 CC_WARNINGS := \
   -Wsign-compare \
   -Wdouble-promotion \
-  -Wshadow \
   -Wunused-variable \
   -Wunused-function \
   -Wswitch \
@@ -139,9 +156,18 @@ CC_WARNINGS := \
   -Wstrict-aliasing \
   -Wno-unused-parameter
 
+ifneq ($(TOOLCHAIN), gcc)
+  # GCC can be overly aggressive with shadow warnings, such as warning when a
+  # lambda has variable with the same name as a non-captured variable from the
+  # enclosing scope. As such, we don't enable shadow warnings on gcc.
+  # https://stackoverflow.com/q/66404751
+  CC_WARNINGS += -Wshadow
+endif
+
 COMMON_FLAGS := \
   -Werror \
   -fno-unwind-tables \
+  -fno-asynchronous-unwind-tables \
   -ffunction-sections \
   -fdata-sections \
   -fmessage-length=0 \
@@ -157,7 +183,7 @@ ifeq ($(TARGET), $(HOST_OS))
 endif
 
 CXXFLAGS := \
-  -std=c++11 \
+  -std=c++17 \
   -fno-rtti \
   -fno-exceptions \
   -fno-threadsafe-statics \
@@ -166,7 +192,7 @@ CXXFLAGS := \
 
 CCFLAGS := \
   -Wimplicit-function-declaration \
-  -std=c11 \
+  -std=c17 \
   $(COMMON_FLAGS)
 
 ARFLAGS := -r
@@ -222,6 +248,8 @@ else ifeq ($(BUILD_TYPE), release_with_logs)
 	CXXFLAGS += -DNDEBUG
 	CCFLAGS  += -DNDEBUG
 else ifeq ($(BUILD_TYPE), no_tf_lite_static_memory)
+	# TODO(b/287320282): remove the no_tf_lite_static_memory build.
+	#
 	# This build should not be used to run any binaries/tests since
 	# TF_LITE_STATIC_MEMORY should be defined for all micro builds. However,
 	# having a build without TF_LITE_STATIC_MEMORY is useful to catch errors in
@@ -236,9 +264,31 @@ endif
 # runtime that can be linked in to other programs.
 MICROLITE_LIB_NAME := libtensorflow-microlite.a
 
+# TFLM optional compression support (default disabled)
+ENABLE_COMPRESSION := no
+ifneq ($(USE_TFLM_COMPRESSION),)
+  # currently only Linux (x86), Xtensa targets supported
+  ifeq ($(TARGET), $(filter $(TARGET), linux xtensa))
+    CXXFLAGS += -DUSE_TFLM_COMPRESSION
+    CCFLAGS += -DUSE_TFLM_COMPRESSION
+    ENABLE_COMPRESSION := yes
+  endif
+endif
+
 # Where compiled objects are stored.
 BASE_GENDIR := gen
-GENDIR := $(BASE_GENDIR)/$(TARGET)_$(TARGET_ARCH)_$(BUILD_TYPE)/
+GENDIR := $(BASE_GENDIR)/$(TARGET)_$(TARGET_ARCH)_$(BUILD_TYPE)
+ifneq ($(OPTIMIZED_KERNEL_DIR),)
+  GENDIR := $(GENDIR)_$(OPTIMIZED_KERNEL_DIR)
+endif
+ifneq ($(CO_PROCESSOR),)
+  GENDIR := $(GENDIR)_$(CO_PROCESSOR)
+endif
+ifeq ($(ENABLE_COMPRESSION), yes)
+  GENDIR := $(GENDIR)_compression
+endif
+GENDIR := $(GENDIR)_$(TOOLCHAIN)/
+
 CORE_OBJDIR := $(GENDIR)obj/core/
 KERNEL_OBJDIR := $(GENDIR)obj/kernels/
 THIRD_PARTY_KERNEL_OBJDIR := $(GENDIR)obj/third_party_kernels/
@@ -267,14 +317,18 @@ endif
 # Kernel integration tests must be excluded on certain targets.
 MICRO_LITE_INTEGRATION_TESTS += $(shell find $(TENSORFLOW_ROOT)tensorflow/lite/micro/integration_tests -name Makefile.inc)
 
-MICRO_LITE_GEN_MUTABLE_OP_RESOLVER_TEST += $(shell find \
-$(TENSORFLOW_ROOT)tensorflow/lite/micro/tools/gen_micro_mutable_op_resolver_test/person_detect -name Makefile.inc)
+MICRO_LITE_GEN_MUTABLE_OP_RESOLVER_TEST += \
+  $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/tools/gen_micro_mutable_op_resolver_test/person_detect/Makefile.inc)
 
-MICRO_LITE_BENCHMARKS := $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/benchmarks/Makefile.inc)
+OLD_MICRO_LITE_BENCHMARKS := $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/benchmarks/Makefile.inc)
+MICRO_LITE_BENCHMARKS := $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/tools/benchmarking/Makefile.inc)
+
+MICRO_LITE_LAYER_BY_LAYER_OUTPUT := $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/tools/Makefile.inc)
 
 # TODO(b/152645559): move all benchmarks to benchmarks directory.
 MICROLITE_BENCHMARK_SRCS := \
-$(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/benchmarks/*benchmark.cc)
+$(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/benchmarks/*benchmark.cc) \
+$(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/tools/benchmarking/*benchmark.cc)
 
 MICROLITE_TEST_SRCS := \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/fake_micro_context_test.cc \
@@ -283,15 +337,16 @@ $(TENSORFLOW_ROOT)tensorflow/lite/micro/memory_arena_threshold_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/memory_helpers_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_allocator_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_allocation_info_test.cc \
-$(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_context_test.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_interpreter_context_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_log_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_interpreter_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_mutable_op_resolver_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_resource_variable_test.cc \
-$(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_string_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_time_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/micro_utils_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/recording_micro_allocator_test.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/span_test.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/static_vector_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/arena_allocator/non_persistent_arena_buffer_allocator_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/arena_allocator/persistent_arena_buffer_allocator_test.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/arena_allocator/recording_single_arena_buffer_allocator_test.cc \
@@ -309,6 +364,8 @@ $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/add_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/add_n.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/arg_min_max.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/assign_variable.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/batch_matmul.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/batch_matmul_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/batch_to_space_nd.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/broadcast_args.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/broadcast_to.cc \
@@ -322,6 +379,8 @@ $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/concatenation.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/conv.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/conv_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/cumsum.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/decompress.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/decompress_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/depth_to_space.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/depthwise_conv.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/depthwise_conv_common.cc \
@@ -331,6 +390,7 @@ $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/detection_postprocess.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/div.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/elementwise.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/elu.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/embedding_lookup.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/ethosu.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/exp.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/expand_dims.cc \
@@ -357,6 +417,7 @@ $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/logistic.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/logistic_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/log_softmax.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/lstm_eval.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/lstm_eval_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/maximum_minimum.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/micro_tensor_utils.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/mirror_pad.cc \
@@ -375,6 +436,7 @@ $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/read_variable.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/reduce.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/reduce_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/reshape.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/reshape_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/resize_bilinear.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/resize_nearest_neighbor.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/round.cc \
@@ -390,6 +452,7 @@ $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/split_v.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/squared_difference.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/squeeze.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/strided_slice.cc \
+$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/strided_slice_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/sub.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/sub_common.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/svdf.cc \
@@ -403,16 +466,66 @@ $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/var_handle.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/while.cc \
 $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/zeros_like.cc
 
+MICROLITE_CC_SIGNAL_KERNEL_SRCS := \
+$(TENSORFLOW_ROOT)signal/micro/kernels/delay.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/energy.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/fft_auto_scale_kernel.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/fft_auto_scale_common.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/filter_bank.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/filter_bank_log.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/filter_bank_square_root.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/filter_bank_square_root_common.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/filter_bank_spectral_subtraction.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/framer.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/irfft.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/rfft.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/stacker.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/overlap_add.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/pcan.cc \
+$(TENSORFLOW_ROOT)signal/micro/kernels/window.cc \
+$(TENSORFLOW_ROOT)signal/src/circular_buffer.cc \
+$(TENSORFLOW_ROOT)signal/src/energy.cc \
+$(TENSORFLOW_ROOT)signal/src/fft_auto_scale.cc \
+$(TENSORFLOW_ROOT)signal/src/filter_bank.cc \
+$(TENSORFLOW_ROOT)signal/src/filter_bank_log.cc \
+$(TENSORFLOW_ROOT)signal/src/filter_bank_square_root.cc \
+$(TENSORFLOW_ROOT)signal/src/filter_bank_spectral_subtraction.cc \
+$(TENSORFLOW_ROOT)signal/src/irfft_float.cc \
+$(TENSORFLOW_ROOT)signal/src/irfft_int16.cc \
+$(TENSORFLOW_ROOT)signal/src/irfft_int32.cc \
+$(TENSORFLOW_ROOT)signal/src/log.cc \
+$(TENSORFLOW_ROOT)signal/src/max_abs.cc \
+$(TENSORFLOW_ROOT)signal/src/msb_32.cc \
+$(TENSORFLOW_ROOT)signal/src/msb_64.cc \
+$(TENSORFLOW_ROOT)signal/src/overlap_add.cc \
+$(TENSORFLOW_ROOT)signal/src/pcan_argc_fixed.cc \
+$(TENSORFLOW_ROOT)signal/src/rfft_float.cc \
+$(TENSORFLOW_ROOT)signal/src/rfft_int16.cc \
+$(TENSORFLOW_ROOT)signal/src/rfft_int32.cc \
+$(TENSORFLOW_ROOT)signal/src/square_root_32.cc \
+$(TENSORFLOW_ROOT)signal/src/square_root_64.cc \
+$(TENSORFLOW_ROOT)signal/src/window.cc
+
 MICROLITE_TEST_HDRS := \
 $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/testing/*.h)
 
 # The explicitly specified list of sources and headers that are shared between
 # TfLite and TFLM are in the ci/sync_from_upstream_tf.sh script.
 TFL_CC_SRCS := \
-$(shell find $(TENSORFLOW_ROOT)tensorflow/lite -type d \( -path $(TENSORFLOW_ROOT)tensorflow/lite/experimental -o -path $(TENSORFLOW_ROOT)tensorflow/lite/micro \) -prune -false -o -name "*.cc" -o -name "*.c")
+$(shell find $(TENSORFLOW_ROOT)tensorflow -type d \( -path $(TENSORFLOW_ROOT)tensorflow/lite/experimental -o -path $(TENSORFLOW_ROOT)tensorflow/lite/micro \) -prune -false -o -name "*.cc" -o -name "*.c")
 
 TFL_CC_HDRS := \
-$(shell find $(TENSORFLOW_ROOT)tensorflow/lite -type d \( -path $(TENSORFLOW_ROOT)tensorflow/lite/experimental -o -path $(TENSORFLOW_ROOT)tensorflow/lite/micro \) -prune -false -o -name "*.h")
+$(shell find $(TENSORFLOW_ROOT)tensorflow -type d \( -path $(TENSORFLOW_ROOT)tensorflow/lite/experimental -o -path $(TENSORFLOW_ROOT)tensorflow/lite/micro \) -prune -false -o -name "*.h")
+
+ifneq ($(BUILD_TYPE), no_tf_lite_static_memory)
+  EXCLUDED_TFL_CC_SRCS := \
+	$(TENSORFLOW_ROOT)tensorflow/lite/array.cc
+  TFL_CC_SRCS := $(filter-out $(EXCLUDED_TFL_CC_SRCS), $(TFL_CC_SRCS))
+
+  EXCLUDED_TFL_CC_HDRS := \
+	$(TENSORFLOW_ROOT)tensorflow/lite/array.h
+  TFL_CC_HDRS := $(filter-out $(EXCLUDED_TFL_CC_HDRS), $(TFL_CC_HDRS))
+endif
 
 MICROLITE_CC_BASE_SRCS := \
 $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/*.cc) \
@@ -422,6 +535,8 @@ $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/tflite_bridge/*.cc) \
 $(TFL_CC_SRCS)
 
 MICROLITE_CC_HDRS := \
+$(wildcard $(TENSORFLOW_ROOT)signal/micro/kernels/*.h) \
+$(wildcard $(TENSORFLOW_ROOT)signal/src/*.h) \
 $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/*.h) \
 $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/benchmarks/*model_data.h) \
 $(wildcard $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/*.h) \
@@ -442,20 +557,31 @@ $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/array.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/base.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/buffer.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/buffer_ref.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/code_generator.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/code_generators.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/default_allocator.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/detached_buffer.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/file_manager.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/flatbuffer_builder.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/flatbuffers.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/flex_flat_util.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/flexbuffers.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/grpc.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/hash.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/idl.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/minireflect.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/reflection.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/reflection_generated.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/registry.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/stl_emulation.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/string.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/struct.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/table.h \
+$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/util.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/vector.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/vector_downward.h \
 $(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/verifier.h \
-$(DOWNLOADS_DIR)/flatbuffers/include/flatbuffers/util.h \
-$(DOWNLOADS_DIR)/flatbuffers/LICENSE.txt \
+$(DOWNLOADS_DIR)/flatbuffers/LICENSE \
 $(DOWNLOADS_DIR)/gemmlowp/fixedpoint/fixedpoint.h \
 $(DOWNLOADS_DIR)/gemmlowp/fixedpoint/fixedpoint_neon.h \
 $(DOWNLOADS_DIR)/gemmlowp/fixedpoint/fixedpoint_sse.h \
@@ -524,8 +650,14 @@ ifeq ($(findstring $(TARGET),$(TARGETS_WITHOUT_MAKEFILES)),)
   include $(MAKEFILE_DIR)/targets/$(TARGET)_makefile.inc
 endif
 
+# Validate valid options.
+ifeq (,$(filter $(OPTIMIZE_KERNELS_FOR),KERNELS_OPTIMIZED_FOR_SPEED KERNELS_OPTIMIZED_FOR_SIZE))
+    $(error Incorrect OPTIMIZE_KERNELS_FOR: $(OPTIMIZE_KERNELS_FOR))
+endif
+
 ifneq ($(OPTIMIZED_KERNEL_DIR),)
   PATH_TO_OPTIMIZED_KERNELS := $(OPTIMIZED_KERNEL_DIR_PREFIX)/$(OPTIMIZED_KERNEL_DIR)
+  PATH_TO_SIGNAL_OPTIMIZED_KERNELS := $(OPTIMIZED_SIGNAL_KERNEL_DIR_PREFIX)/$(OPTIMIZED_KERNEL_DIR)
 
   # Check that OPTIMIZED_KERNEL_DIR is valid to avoid unexpected fallback to
   # reference kernels. See http://b/183546742 for more context.
@@ -539,6 +671,22 @@ ifneq ($(OPTIMIZED_KERNEL_DIR),)
   MICROLITE_CC_KERNEL_SRCS := $(shell python3 $(MAKEFILE_DIR)/specialize_files.py \
 		--base_files "$(MICROLITE_CC_KERNEL_SRCS)" \
 		--specialize_directory $(PATH_TO_OPTIMIZED_KERNELS))
+
+  ifneq ($(filter $(OPTIMIZED_KERNEL_DIR), xtensa),)
+    # Check that OPTIMIZED_KERNEL_DIR is valid to avoid unexpected fallback to
+    # reference kernels. See http://b/183546742 for more context.
+    RESULT := $(shell $(MAKEFILE_DIR)/check_optimized_kernel_dir.sh $(PATH_TO_SIGNAL_OPTIMIZED_KERNELS))
+    ifneq ($(RESULT), SUCCESS)
+      $(error Incorrect SIGNAL OPTIMIZED_KERNEL_DIR: $(RESULT))
+    endif
+
+    # Specialize for the optimized kernels
+    MICROLITE_CC_SIGNAL_KERNEL_SRCS := $(shell python3 $(MAKEFILE_DIR)/specialize_files.py \
+      --base_files "$(MICROLITE_CC_SIGNAL_KERNEL_SRCS)" \
+      --specialize_directory $(PATH_TO_SIGNAL_OPTIMIZED_KERNELS))
+    MICROLITE_CC_KERNEL_SRCS += $(wildcard $(PATH_TO_SIGNAL_OPTIMIZED_KERNELS)/*.S)
+    MICROLITE_CC_HDRS += $(wildcard $(PATH_TO_SIGNAL_OPTIMIZED_KERNELS)/*.h)
+  endif
 
   # The first ifneq is needed to be compatible with make versions prior to 4.2
   # which do not support .SHELLSTATUS. While make 4.2 was released in 2016,
@@ -554,6 +702,8 @@ ifneq ($(OPTIMIZED_KERNEL_DIR),)
   # list of headers.
   MICROLITE_CC_HDRS += $(wildcard $(PATH_TO_OPTIMIZED_KERNELS)/*.h)
 endif
+
+MICROLITE_CC_KERNEL_SRCS += $(MICROLITE_CC_SIGNAL_KERNEL_SRCS)
 
 # If a co-processor is specified on the command line with
 # CO_PROCESSOR=<co_processor> then we will include ext_libs/<co_processor>.inc
@@ -623,7 +773,14 @@ include $(MICRO_LITE_INTEGRATION_TESTS)
 # Load generated micro mutable op resolver test.
 include ${MICRO_LITE_GEN_MUTABLE_OP_RESOLVER_TEST}
 
+# Load layer_by_layer_output_tool
+ifneq ($(TARGET), $(filter $(TARGET), \
+  bluepill cortex_m_corstone_300 riscv32_generic hexagon))
+include ${MICRO_LITE_LAYER_BY_LAYER_OUTPUT}
+endif
+
 # Load the benchmarks.
+include $(OLD_MICRO_LITE_BENCHMARKS)
 include $(MICRO_LITE_BENCHMARKS)
 
 # Load custom kernel tests.
@@ -716,6 +873,7 @@ $(BINDIR)%.test_target: $(BINDIR)%_test
 # These are microcontroller-specific rules for converting the ELF output
 # of the linker into a binary image that can be loaded directly.
 ifeq ($(TOOLCHAIN), armclang)
+  CXXFLAGS += -ffp-mode=full
   FROMELF := ${TARGET_TOOLCHAIN_ROOT}$(TARGET_TOOLCHAIN_PREFIX)fromelf
   $(BINDIR)%.bin: $(BINDIR)%
 		@mkdir -p $(dir $@)
@@ -790,6 +948,9 @@ endif
 
 # Just build the test targets
 build: $(MICROLITE_BUILD_TARGETS)
+
+list_gendir:
+	@echo $(GENDIR)
 
 list_library_sources:
 	@echo $(MICROLITE_CC_SRCS) $(MICROLITE_CC_KERNEL_SRCS)

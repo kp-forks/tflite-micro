@@ -35,7 +35,7 @@ readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile
 if [[ ${1} == "INTERNAL" ]]; then
 readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile \
   TARGET=xtensa \
-  TARGET_ARCH=hifi4 \
+  TARGET_ARCH=hifi3 \
   OPTIMIZED_KERNEL_DIR=xtensa \
   XTENSA_CORE=F1_190305_swupgrade \
   TENSORFLOW_ROOT=${TENSORFLOW_ROOT} \
@@ -44,7 +44,7 @@ readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile
 
 readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile \
   TARGET=xtensa \
-  TARGET_ARCH=hifi4 \
+  TARGET_ARCH=hifi3 \
   OPTIMIZED_KERNEL_DIR=xtensa \
   XTENSA_CORE=F1_190305_swupgrade \
   TENSORFLOW_ROOT=${TENSORFLOW_ROOT} \
@@ -53,7 +53,7 @@ readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile
 else
 readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile \
   TARGET=xtensa \
-  TARGET_ARCH=hifi4 \
+  TARGET_ARCH=hifi3 \
   OPTIMIZED_KERNEL_DIR=xtensa \
   XTENSA_CORE=F1_190305_swupgrade \
   TENSORFLOW_ROOT=${TENSORFLOW_ROOT} \
@@ -62,10 +62,21 @@ readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile
 
 readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile \
   TARGET=xtensa \
-  TARGET_ARCH=hifi4 \
+  TARGET_ARCH=hifi3 \
   OPTIMIZED_KERNEL_DIR=xtensa \
   XTENSA_CORE=F1_190305_swupgrade \
   TENSORFLOW_ROOT=${TENSORFLOW_ROOT} \
   EXTERNAL_DIR=${EXTERNAL_DIR} \
   test -j$(nproc)
+
+# run generic benchmark
+readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile \
+  TARGET=xtensa \
+  TARGET_ARCH=hifi3 \
+  OPTIMIZED_KERNEL_DIR=xtensa \
+  XTENSA_CORE=F1_190305_swupgrade \
+  TENSORFLOW_ROOT=${TENSORFLOW_ROOT} \
+  EXTERNAL_DIR=${EXTERNAL_DIR} \
+  GENERIC_BENCHMARK_MODEL_PATH=${TENSORFLOW_ROOT}tensorflow/lite/micro/models/person_detect.tflite \
+  run_tflm_benchmark -j$(nproc)
 fi

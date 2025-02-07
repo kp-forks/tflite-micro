@@ -1,4 +1,4 @@
-# Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ from absl import app
 from absl import flags
 from mako import template
 
-from tflite_micro.tensorflow.lite.tools import visualize as visualize
+from tensorflow.lite.tools import visualize
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), 'templates')
 TEMPLATE_DIR = os.path.abspath(TEMPLATE_DIR)
@@ -68,6 +68,11 @@ def ParseString(word):
         formated_op_string += part.upper()
     else:
       formated_op_string += part.upper()
+
+  # Edge cases
+  formated_op_string = formated_op_string.replace('Lstm', 'LSTM')
+  formated_op_string = formated_op_string.replace('BatchMatmul', 'BatchMatMul')
+
   return 'Add' + formated_op_string
 
 

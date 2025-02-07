@@ -1,6 +1,6 @@
 load(
     "//tensorflow/lite/micro:build_def.bzl",
-    "micro_copts",
+    "tflm_cc_library",
 )
 
 package(
@@ -9,7 +9,7 @@ package(
     licenses = ["notice"],
 )
 
-cc_library(
+tflm_cc_library(
     name = "flatbuffer_conversions_bridge",
     srcs = [
         "flatbuffer_conversions_bridge.cc",
@@ -17,7 +17,6 @@ cc_library(
     hdrs = [
         "flatbuffer_conversions_bridge.h",
     ],
-    copts = micro_copts(),
     visibility = [
         "//tensorflow/lite/micro:__pkg__",
     ],
@@ -29,34 +28,13 @@ cc_library(
     ],
 )
 
-cc_library(
-    name = "op_resolver_bridge",
-    srcs = ["op_resolver_bridge.cc"],
-    hdrs = ["op_resolver_bridge.h"],
-    copts = micro_copts(),
-    visibility = [
-        "//tensorflow/lite/micro:__pkg__",
-    ],
-    deps = [
-        ":micro_error_reporter",
-        "//tensorflow/lite/c:common",
-        "//tensorflow/lite/core/api:error_reporter",
-        "//tensorflow/lite/core/api:op_resolver",
-        "//tensorflow/lite/schema:schema_fbs",
-    ],
-)
-
-cc_library(
+tflm_cc_library(
     name = "micro_error_reporter",
     srcs = [
         "micro_error_reporter.cc",
     ],
     hdrs = [
         "micro_error_reporter.h",
-    ],
-    copts = micro_copts(),
-    visibility = [
-        "//tensorflow/lite/micro/tflite_bridge:__pkg__",
     ],
     deps = [
         "//tensorflow/lite/core/api:error_reporter",

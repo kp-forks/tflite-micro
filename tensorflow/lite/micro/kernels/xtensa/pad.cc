@@ -18,7 +18,6 @@ limitations under the License.
 
 #include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/c/common.h"
-#include "tensorflow/lite/kernels/internal/portable_tensor.h"
 #include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/kernels/op_macros.h"
@@ -216,8 +215,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           constant_values == nullptr
               ? 0
               : *tflite::micro::GetTensorData<int16_t>(constant_values);
-#if defined(HIFI4)
-      /* NNLib currently only supports upto 4D input tensors */
+#if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+      /* NNLib currently only supports up to 4D input tensors */
       if (tflite::micro::GetTensorShape(input).DimensionsCount() == 4) {
         const TfLiteEvalTensor* paddings =
             tflite::micro::GetEvalInput(context, node, /*index=*/1);
@@ -234,14 +233,14 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
             pad_value);
         if (err != 0) return kTfLiteError;
       } else {
-#endif  // defined(HIFI4)
+#endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
         reference_ops::Pad(data->params, tflite::micro::GetTensorShape(input),
                            tflite::micro::GetTensorData<int16_t>(input),
                            &pad_value, tflite::micro::GetTensorShape(output),
                            tflite::micro::GetTensorData<int16_t>(output));
-#if defined(HIFI4)
+#if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
       }
-#endif  // defined(HIFI4)
+#endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
     } break;
     case kTfLiteInt32: {
       int32_t pad_value =
@@ -264,12 +263,12 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 
 }  // namespace
 
-TfLiteRegistration Register_PAD() {
+TFLMRegistration Register_PAD() {
   return tflite::micro::RegisterOp(Init, Prepare, Eval);
 }
 
 // Also register Pad as PadV2.
-TfLiteRegistration Register_PADV2() {
+TFLMRegistration Register_PADV2() {
   return tflite::micro::RegisterOp(Init, Prepare, Eval);
 }
 

@@ -3,7 +3,8 @@
 load(
     "//tensorflow/lite/micro:build_def.bzl",
     "generate_cc_arrays",
-    "micro_copts",
+    "tflm_cc_library",
+    "tflm_cc_test",
 )
 
 package(
@@ -46,7 +47,7 @@ generate_cc_arrays(
 )
 % endfor
 
-cc_library(
+tflm_cc_library(
     name = "models_and_testdata",
     srcs = [
 % for target in targets:
@@ -65,16 +66,14 @@ cc_library(
 % endfor
         "generated_${target}_golden_${output_dtype}_test_data_hdr",
 % endfor
-    ],    
-    copts = micro_copts(),
+    ],
 )
 
-cc_test(
+tflm_cc_test(
     name = "integration_test",
     srcs = [
         "integration_tests.cc",
     ],
-    copts = micro_copts(),
     deps = [
         ":models_and_testdata",
         "//tensorflow/lite/micro:micro_framework",
@@ -82,6 +81,7 @@ cc_test(
         "//tensorflow/lite/micro:micro_resource_variable",
         "//tensorflow/lite/micro:op_resolvers",
         "//tensorflow/lite/micro:recording_allocators",
+        "//python/tflite_micro:python_ops_resolver",
         "//tensorflow/lite/micro/testing:micro_test",
     ],
 )

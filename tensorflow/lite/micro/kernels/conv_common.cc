@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ limitations under the License.
 #include "tensorflow/lite/kernels/padding.h"
 #include "tensorflow/lite/micro/kernels/conv.h"
 #include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_log.h"
 
 namespace tflite {
 
@@ -71,6 +72,11 @@ ConvParams ConvParamsQuantized(const TfLiteConvParams& params,
   return op_params;
 }
 
+void* ConvInit(TfLiteContext* context, const char* buffer, size_t length) {
+  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+  return context->AllocatePersistentBuffer(context, sizeof(OpDataConv));
+}
+
 TfLiteStatus CalculateOpDataConv(TfLiteContext* context, TfLiteNode* node,
                                  const TfLiteConvParams& params, int width,
                                  int height, int filter_width,
@@ -120,10 +126,12 @@ TfLiteStatus CalculateOpDataConv(TfLiteContext* context, TfLiteNode* node,
   data->filter_zero_point = filter->params.zero_point;
   data->output_zero_point = output->params.zero_point;
 
+  micro_context->DeallocateTempTfLiteTensor(output);
   micro_context->DeallocateTempTfLiteTensor(input);
   micro_context->DeallocateTempTfLiteTensor(filter);
-  micro_context->DeallocateTempTfLiteTensor(output);
-  micro_context->DeallocateTempTfLiteTensor(bias);
+  if (bias != nullptr) {
+    micro_context->DeallocateTempTfLiteTensor(bias);
+  }
 
   return kTfLiteOk;
 }
@@ -146,6 +154,15 @@ TfLiteStatus ConvPrepare(TfLiteContext* context, TfLiteNode* node) {
   TfLiteTensor* filter =
       micro_context->AllocateTempInputTensor(node, kConvWeightsTensor);
   TF_LITE_ENSURE(context, filter != nullptr);
+
+  TF_LITE_ENSURE_EQ(context, input->type, output->type);
+  TF_LITE_ENSURE_MSG(
+      context,
+      (input->type == kTfLiteFloat32 && filter->type == kTfLiteFloat32) ||
+          (input->type == kTfLiteInt16 && filter->type == kTfLiteInt8) ||
+          (input->type == kTfLiteInt8 &&
+           (filter->type == kTfLiteInt4 || filter->type == kTfLiteInt8)),
+      "Hybrid models are not supported on TFLite Micro.");
 
   const int input_width = input->dims->data[2];
   const int input_height = input->dims->data[1];
@@ -193,10 +210,26 @@ TfLiteStatus ConvPrepare(TfLiteContext* context, TfLiteNode* node) {
                                          &data->filter_buffer_index);
   }
 
+#ifdef USE_TFLM_COMPRESSION
+
+  // Compression scratch buffers.
+  // These will only be allocated if the tensor is compressed.
+  if (micro_context->IsTensorCompressed(node, kConvWeightsTensor) &&
+      filter->type == kTfLiteInt4) {
+    MicroPrintf("Compression not supported with INT4 tensors");
+    return kTfLiteError;
+  }
+  data->weights_scratch_index =
+      micro_context->AllocateDecompressionScratchBuffer(node,
+                                                        kConvWeightsTensor);
+  data->bias_scratch_index =
+      micro_context->AllocateDecompressionScratchBuffer(node, kConvBiasTensor);
+
+#endif  // USE_TFLM_COMPRESSION
+
   micro_context->DeallocateTempTfLiteTensor(filter);
   micro_context->DeallocateTempTfLiteTensor(input);
   micro_context->DeallocateTempTfLiteTensor(output);
-
   return kTfLiteOk;
 }
 }  // namespace tflite

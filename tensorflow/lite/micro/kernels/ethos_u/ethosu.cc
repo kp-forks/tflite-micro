@@ -163,8 +163,8 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 
 }  // namespace
 
-TfLiteRegistration* Register_ETHOSU() {
-  static TfLiteRegistration r = tflite::micro::RegisterOp(Init, Prepare, Eval);
+TFLMRegistration* Register_ETHOSU() {
+  static TFLMRegistration r = tflite::micro::RegisterOp(Init, Prepare, Eval);
   return &r;
 }
 

@@ -34,7 +34,7 @@ readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile
   TARGET=xtensa \
   TARGET_ARCH=hifi5 \
   OPTIMIZED_KERNEL_DIR=xtensa \
-  XTENSA_CORE=AE_HiFi5_LE5_AO_FP_XC \
+  XTENSA_CORE=PRD_H5_RDO_07_01_2022 \
   TENSORFLOW_ROOT=${TENSORFLOW_ROOT} \
   EXTERNAL_DIR=${EXTERNAL_DIR} \
   build -j$(nproc)
@@ -43,7 +43,18 @@ readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile
   TARGET=xtensa \
   TARGET_ARCH=hifi5 \
   OPTIMIZED_KERNEL_DIR=xtensa \
-  XTENSA_CORE=AE_HiFi5_LE5_AO_FP_XC \
+  XTENSA_CORE=PRD_H5_RDO_07_01_2022 \
   TENSORFLOW_ROOT=${TENSORFLOW_ROOT} \
   EXTERNAL_DIR=${EXTERNAL_DIR} \
   test -j$(nproc)
+
+# run generic benchmark
+readable_run make -f ${TENSORFLOW_ROOT}tensorflow/lite/micro/tools/make/Makefile \
+  TARGET=xtensa \
+  TARGET_ARCH=hifi5 \
+  OPTIMIZED_KERNEL_DIR=xtensa \
+  XTENSA_CORE=PRD_H5_RDO_07_01_2022 \
+  TENSORFLOW_ROOT=${TENSORFLOW_ROOT} \
+  EXTERNAL_DIR=${EXTERNAL_DIR} \
+  GENERIC_BENCHMARK_MODEL_PATH=${TENSORFLOW_ROOT}tensorflow/lite/micro/models/person_detect.tflite \
+  run_tflm_benchmark -j$(nproc)

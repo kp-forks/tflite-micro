@@ -35,12 +35,11 @@ endif
 TARGET_ARCH_DEFINES := -D$(shell echo $(TARGET_ARCH) | tr [a-z] [A-Z])
 
 PLATFORM_FLAGS = \
+  -stdlib=libc++ \
   -DTF_LITE_MCU_DEBUG_LOG \
   -DTF_LITE_USE_CTIME \
   --xtensa-core=$(XTENSA_CORE) \
   -mcoproc \
-  -DMAX_RFFT_PWR=9 \
-  -DMIN_RFFT_PWR=MAX_RFFT_PWR \
   $(TARGET_ARCH_DEFINES) \
   -mlongcalls
 
@@ -84,7 +83,6 @@ MICROLITE_TEST_SRCS := $(filter-out $(EXCLUDED_TESTS), $(MICROLITE_TEST_SRCS))
 EXCLUDED_EXAMPLE_TESTS := \
   $(TENSORFLOW_ROOT)tensorflow/lite/micro/examples/hello_world/Makefile.inc \
   $(TENSORFLOW_ROOT)tensorflow/lite/micro/examples/image_recognition_experimental/Makefile.inc \
-  $(TENSORFLOW_ROOT)tensorflow/lite/micro/examples/magic_wand/Makefile.inc \
   $(TENSORFLOW_ROOT)tensorflow/lite/micro/examples/network_tester/Makefile.inc
 MICRO_LITE_EXAMPLE_TESTS := $(filter-out $(EXCLUDED_EXAMPLE_TESTS), $(MICRO_LITE_EXAMPLE_TESTS))
 MICRO_LITE_EXAMPLE_TESTS += $(shell find $(TENSORFLOW_ROOT)third_party/xtensa/examples/ -name Makefile.inc)
@@ -99,4 +97,10 @@ ifeq ($(OPTIMIZED_KERNEL_DIR), xtensa)
   $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc \
   $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/xtensa/lstm_eval_hifi.cc \
   $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc
+
+  # override KERNEL_OPTIMIZATION_LEVEL to enable higher performance
+  # Xtensa intrinsics.
+$(KERNEL_OBJDIR)$(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/xtensa/decompress.o: $(TENSORFLOW_ROOT)tensorflow/lite/micro/kernels/xtensa/decompress.cc
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -O3 -LNO:simd $(INCLUDES) -c $< -o $@
 endif

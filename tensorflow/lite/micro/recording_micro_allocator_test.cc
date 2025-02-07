@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,7 +15,6 @@ limitations under the License.
 
 #include "tensorflow/lite/micro/recording_micro_allocator.h"
 
-#include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/micro/micro_allocator.h"
 #include "tensorflow/lite/micro/test_helpers.h"
 #include "tensorflow/lite/micro/testing/micro_test.h"
@@ -37,7 +36,7 @@ TF_LITE_MICRO_TESTS_BEGIN
 
 TF_LITE_MICRO_TEST(TestRecordsTfLiteEvalTensorArrayData) {
   tflite::ScratchBufferHandle* scratch_buffer_handles = nullptr;
-  tflite::AllOpsResolver all_ops_resolver;
+  tflite::testing::TestingOpResolver ops_resolver;
   const tflite::Model* model = tflite::GetModel(kTestConvModelData);
   uint8_t arena[kTestConvArenaSize];
 
@@ -77,7 +76,7 @@ TF_LITE_MICRO_TEST(TestRecordsTfLiteEvalTensorArrayData) {
 
 TF_LITE_MICRO_TEST(TestRecordsNodeAndRegistrationArrayData) {
   tflite::ScratchBufferHandle* scratch_buffer_handles = nullptr;
-  tflite::AllOpsResolver all_ops_resolver;
+  tflite::testing::TestingOpResolver ops_resolver;
   const tflite::Model* model = tflite::GetModel(kTestConvModelData);
   uint8_t arena[kTestConvArenaSize];
 
@@ -110,7 +109,7 @@ TF_LITE_MICRO_TEST(TestRecordsNodeAndRegistrationArrayData) {
 
 TF_LITE_MICRO_TEST(TestRecordsMultiTenantAllocations) {
   tflite::ScratchBufferHandle* scratch_buffer_handles = nullptr;
-  tflite::AllOpsResolver all_ops_resolver;
+  tflite::testing::TestingOpResolver ops_resolver;
   const tflite::Model* model = tflite::GetModel(kTestConvModelData);
 
   // Double the arena size to allocate two models inside of it:
@@ -267,7 +266,7 @@ TF_LITE_MICRO_TEST(TestRecordsPersistentBufferData) {
 
 TF_LITE_MICRO_TEST(TestMultiSubgraphModel) {
   tflite::ScratchBufferHandle* scratch_buffer_handles = nullptr;
-  tflite::AllOpsResolver all_ops_resolver;
+  tflite::testing::TestingOpResolver ops_resolver;
   const tflite::Model* model =
       tflite::testing::GetSimpleModelWithNullInputsAndOutputs();
   const int arena_size = 2048;
@@ -317,6 +316,72 @@ TF_LITE_MICRO_TEST(TestMultiSubgraphModel) {
   TF_LITE_MICRO_EXPECT_GE(recorded_allocation.used_bytes,
                           num_tensors * TF_LITE_EVAL_TENSOR_STRUCT_SIZE);
 }
+
+#ifdef USE_TFLM_COMPRESSION
+
+TF_LITE_MICRO_TEST(TestCompressedModel) {
+  tflite::ScratchBufferHandle* scratch_buffer_handles = nullptr;
+  tflite::testing::TestingOpResolver ops_resolver;
+  const tflite::Model* model = tflite::testing::GetSimpleMockModelCompressed();
+  const int arena_size = 2048;
+
+  uint8_t arena[arena_size];
+
+  tflite::RecordingMicroAllocator* micro_allocator =
+      tflite::RecordingMicroAllocator::Create(arena, arena_size);
+  TF_LITE_MICRO_EXPECT(micro_allocator != nullptr);
+  TF_LITE_MICRO_CHECK_FAIL();
+
+  tflite::SubgraphAllocations* subgraph_allocations =
+      micro_allocator->StartModelAllocation(model);
+  TF_LITE_MICRO_EXPECT(nullptr != subgraph_allocations);
+  TF_LITE_MICRO_CHECK_FAIL();
+
+  TfLiteStatus status = micro_allocator->FinishModelAllocation(
+      model, subgraph_allocations, &scratch_buffer_handles);
+  TF_LITE_MICRO_EXPECT_EQ(status, kTfLiteOk);
+  TF_LITE_MICRO_CHECK_FAIL();
+
+  micro_allocator->PrintAllocations();
+
+  size_t count_compression_allocations = 0;
+  size_t size_compression_allocations = 0;
+  for (size_t subgraph_idx = 0; subgraph_idx < model->subgraphs()->size();
+       subgraph_idx++) {
+    const tflite::CompressionTensorData** ctl =
+        subgraph_allocations[subgraph_idx].compressed.tensors;
+    if (ctl == nullptr) {
+      continue;
+    }
+    const tflite::SubGraph* subgraph = model->subgraphs()->Get(subgraph_idx);
+    const size_t num_tensors = subgraph->tensors()->size();
+    for (size_t i = 0; i < num_tensors; i++) {
+      if (ctl[i] != nullptr) {
+        count_compression_allocations++;
+        size_compression_allocations += sizeof(tflite::CompressionTensorData);
+        count_compression_allocations++;
+        size_compression_allocations += sizeof(tflite::LookupTableData);
+      }
+    }
+    // Add the CompressionTensorData array
+    count_compression_allocations++;
+    size_compression_allocations +=
+        num_tensors * sizeof(tflite::CompressionTensorData*);
+  }
+
+  tflite::RecordedAllocation recorded_allocation =
+      micro_allocator->GetRecordedAllocation(
+          tflite::RecordedAllocationType::kCompressionData);
+
+  TF_LITE_MICRO_EXPECT_EQ(recorded_allocation.count,
+                          count_compression_allocations);
+  TF_LITE_MICRO_EXPECT_EQ(recorded_allocation.requested_bytes,
+                          size_compression_allocations);
+  TF_LITE_MICRO_EXPECT_GE(recorded_allocation.used_bytes,
+                          size_compression_allocations);
+}
+
+#endif  // USE_TFLM_COMPRESSION
 
 // TODO(b/158124094): Find a way to audit OpData allocations on
 // cross-architectures.

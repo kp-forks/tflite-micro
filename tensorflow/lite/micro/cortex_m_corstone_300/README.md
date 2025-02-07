@@ -11,11 +11,10 @@ https://developer.arm.com/ip-products/subsystem/corstone/corstone-300)
 Building the Corstone-300 based target has the following dependencies:
 
 -   [Arm Ethos-U Core Platform](https://review.mlplatform.org/admin/repos/ml/ethos-u/ethos-u-core-platform)
-    -   Arm Ethos-U Core Platform provides the linker file as well as UART and
-        retarget functions.
--   [CMSIS](https://github.com/ARM-software/CMSIS_5)
-    -   CMSIS provides startup functionality, e.g. for setting up interrupt
-        handlers and clock speed.
+    -   Arm Ethos-U Core Platform provides the linker file as well as UART and retarget functions.
+-   [CMSIS](https://github.com/ARM-software/CMSIS_6) + [CMSIS-Cortex_DFP](https://github.com/ARM-software/Cortex_DFP)
+    -   CMSIS provides startup functionality, e.g. for setting up interrupt handlers and clock speed.
+    -   See cmsis_download.sh for how these are downloaded relative to each other for the given examples and make targets.
 
 Both these repositories are downloaded automatically by the build process in
 TFLM.
@@ -37,12 +36,12 @@ compatible. This means one could run code compiled for e.g. a Cortex-M7.
 Some examples:
 
 ```
-make -j -f tensorflow/lite/micro/tools/make/Makefile CO_PROCESSOR=ethos_u TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_network_tester_test
-make -j -f tensorflow/lite/micro/tools/make/Makefile OPTIMIZED_KERNEL_DIR=cmsis_nn TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_network_tester_test
-make -j -f tensorflow/lite/micro/tools/make/Makefile CO_PROCESSOR=ethos_u OPTIMIZED_KERNEL_DIR=cmsis_nn TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_network_tester_test
-make -j -f tensorflow/lite/micro/tools/make/Makefile TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_network_tester_test
-make -j -f tensorflow/lite/micro/tools/make/Makefile TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_kernel_fully_connected_test
-make -j -f tensorflow/lite/micro/tools/make/Makefile OPTIMIZED_KERNEL_DIR=cmsis_nn TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m7+fp test_kernel_fully_connected_test
-make -j -f tensorflow/lite/micro/tools/make/Makefile TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m3 test_kernel_fully_connected_test
-make -j -f tensorflow/lite/micro/tools/make/Makefile TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 BUILD_TYPE=release_with_logs TOOLCHAIN=armclang test_hello_world_test
+make -f tensorflow/lite/micro/tools/make/Makefile CO_PROCESSOR=ethos_u TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_network_tester_test
+make -f tensorflow/lite/micro/tools/make/Makefile OPTIMIZED_KERNEL_DIR=cmsis_nn TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_network_tester_test
+make -f tensorflow/lite/micro/tools/make/Makefile CO_PROCESSOR=ethos_u OPTIMIZED_KERNEL_DIR=cmsis_nn TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_network_tester_test
+make -f tensorflow/lite/micro/tools/make/Makefile TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_network_tester_test
+make -f tensorflow/lite/micro/tools/make/Makefile TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 test_kernel_fully_connected_test
+make -f tensorflow/lite/micro/tools/make/Makefile OPTIMIZED_KERNEL_DIR=cmsis_nn TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m7+fp test_kernel_fully_connected_test
+make -f tensorflow/lite/micro/tools/make/Makefile TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m3 test_kernel_fully_connected_test
+make -f tensorflow/lite/micro/tools/make/Makefile TARGET=cortex_m_corstone_300 TARGET_ARCH=cortex-m55 BUILD_TYPE=release_with_logs TOOLCHAIN=armclang test_network_tester_test
 ```

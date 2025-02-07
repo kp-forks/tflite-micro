@@ -1,3 +1,18 @@
+# Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 export PATH := $(DOWNLOADS_DIR)/gcc_embedded/bin/:$(PATH)
 TARGET_ARCH := cortex-m3
 TARGET_TOOLCHAIN_PREFIX := arm-none-eabi-
@@ -43,6 +58,7 @@ CCFLAGS += $(PLATFORM_FLAGS)
 
 LDFLAGS += \
   -T $(MAKEFILE_DIR)/targets/bluepill/bluepill.lds \
+  -Wl,--no-warn-rwx-segment \
   -Wl,-Map=gen/$(TARGET).map,--cref
 
 # Additional include paths needed for the stm_32_bare_lib only.
@@ -72,9 +88,7 @@ EXCLUDED_TESTS += $(TENSORFLOW_ROOT)tensorflow/lite/micro/flatbuffer_utils_test.
 
 MICROLITE_TEST_SRCS := $(filter-out $(EXCLUDED_TESTS), $(MICROLITE_TEST_SRCS))
 
-EXCLUDED_EXAMPLE_TESTS := \
-  $(TENSORFLOW_ROOT)tensorflow/lite/micro/examples/magic_wand/Makefile.inc \
-  $(TENSORFLOW_ROOT)tensorflow/lite/micro/examples/micro_speech/Makefile.inc
+EXCLUDED_EXAMPLE_TESTS :=
 
 MICRO_LITE_EXAMPLE_TESTS := $(filter-out $(EXCLUDED_EXAMPLE_TESTS), $(MICRO_LITE_EXAMPLE_TESTS))
 
@@ -88,3 +102,5 @@ TEST_TARGET_BINARIES = $(shell ls -1 $(BINDIR)/*_test)
 
 test: build
 	$(TEST_SCRIPT) "$(TEST_TARGET_BINARIES)" $(TEST_PASS_STRING) $(TARGET)
+
+include $(MAKEFILE_DIR)/ext_libs/eyalroz_printf.inc

@@ -469,7 +469,7 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   return kTfLiteOk;
 }
 
-TfLiteRegistration Register_FULLY_CONNECTED() {
+TFLMRegistration Register_FULLY_CONNECTED() {
   return tflite::micro::RegisterOp(Init, Prepare, Eval);
 }
 

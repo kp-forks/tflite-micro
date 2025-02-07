@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -33,6 +33,11 @@ enum class RecordedAllocationType {
   kTfLiteTensorVariableBufferData,
   kNodeAndRegistrationArray,
   kOpData,
+#ifdef USE_TFLM_COMPRESSION
+  kCompressionData,
+#endif  // USE_TFLM_COMPRESSION
+
+  kNumAllocationTypes,  // must be last
 };
 
 // Container for holding information about allocation recordings by a given
@@ -77,8 +82,9 @@ class RecordingMicroAllocator : public MicroAllocator {
       const Model* model, SubgraphAllocations* subgraph_allocations) override;
   TfLiteStatus AllocateTfLiteEvalTensors(
       const Model* model, SubgraphAllocations* subgraph_allocations) override;
-  TfLiteStatus AllocateVariables(const SubGraph* subgraph,
-                                 TfLiteEvalTensor* eval_tensors) override;
+  TfLiteStatus AllocateVariables(
+      const SubGraph* subgraph, TfLiteEvalTensor* eval_tensors,
+      const int32_t* offline_planner_offsets) override;
   // TODO(b/162311891): Once all kernels have been updated to the new API drop
   // this method. It is only used to record TfLiteTensor persistent allocations.
   TfLiteTensor* AllocatePersistentTfLiteTensorInternal() override;
@@ -91,6 +97,13 @@ class RecordingMicroAllocator : public MicroAllocator {
                                                   int tensor_index,
                                                   int subgraph_index,
                                                   bool allocate_temp) override;
+
+#ifdef USE_TFLM_COMPRESSION
+
+  TfLiteStatus AllocateCompressedTensorsList(
+      const Model* model, SubgraphAllocations* subgraph_allocations) override;
+
+#endif  // USE_TFLM_COMPRESSION
 
  private:
   RecordingMicroAllocator(RecordingSingleArenaBufferAllocator* memory_allocator,
@@ -112,6 +125,9 @@ class RecordingMicroAllocator : public MicroAllocator {
   RecordedAllocation recorded_persistent_buffer_data_ = {};
   RecordedAllocation recorded_tflite_tensor_variable_buffer_data_ = {};
   RecordedAllocation recorded_node_and_registration_array_data_ = {};
+#ifdef USE_TFLM_COMPRESSION
+  RecordedAllocation recorded_compression_data_ = {};
+#endif  // USE_TFLM_COMPRESSION
 
   // TODO(b/187993291): Re-enable OpData allocating tracking.
   RecordedAllocation recorded_op_data_ = {};

@@ -15,9 +15,10 @@ limitations under the License.
 
 #include <stdint.h>
 
-#include "tensorflow/lite/micro/all_ops_resolver.h"
+#include "tensorflow/lite/micro/kernels/svdf.h"
 #include "tensorflow/lite/micro/memory_helpers.h"
 #include "tensorflow/lite/micro/memory_planner/greedy_memory_planner.h"
+#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/micro/models/keyword_scrambled_model_data.h"
 #include "tensorflow/lite/micro/recording_micro_allocator.h"
 #include "tensorflow/lite/micro/recording_micro_interpreter.h"
@@ -56,24 +57,22 @@ constexpr int kKeywordModelNodeAndRegistrationCount = 15;
 // Total size contributed by the keyword model excluding the
 // RecordingMicroAllocator's overhead
 // TODO(b/207157610): replace magic number that depends on OPs
-constexpr int kKeywordModelOnlyTotalSize = 14304;
+constexpr int kKeywordModelOnlyTotalSize = 14472;
 // Tail size contributed by the kdyword model excluding the
 // RecordingMicroAllocator's overhead
 // TODO(b/207157610): replace magic number that depends on OPs
-constexpr int kKeywordModelOnlyTailSize = 13632;
+constexpr int kKeywordModelOnlyTailSize = 13800;
 constexpr int kKeywordModelPersistentTfLiteTensorDataSize = 128;
-constexpr int kKeywordModelPersistentBufferDataSize = 756;
 #else
 // Total size contributed by the keyword model excluding the
 // RecordingMicroAllocator's overhead.
 // TODO(b/207157610): replace magic number that depends on OPs
-constexpr int kKeywordModelOnlyTotalSize = 14752;
+constexpr int kKeywordModelOnlyTotalSize = 14936;
 // Tail size contributed by the keyword model excluding the
 // RecordingMicroAllocator's overhead
 // TODO(b/207157610): replace magic number that depends on OPs
-constexpr int kKeywordModelOnlyTailSize = 14080;
+constexpr int kKeywordModelOnlyTailSize = 14264;
 constexpr int kKeywordModelPersistentTfLiteTensorDataSize = 224;
-constexpr int kKeywordModelPersistentBufferDataSize = 764;
 #endif
 constexpr int kKeywordModelHeadSize = 672;
 constexpr int kKeywordModelTfLiteTensorVariableBufferDataSize = 10240;
@@ -86,30 +85,36 @@ uint8_t test_conv_tensor_arena[kTestConvModelArenaSize];
 constexpr int kTestConvModelTensorCount = 15;
 constexpr int kTestConvModelNodeAndRegistrationCount = 7;
 
+#if defined(USE_TFLM_COMPRESSION)
+constexpr int kKeywordModelPersistentBufferDataSize = 920;
+#else
+constexpr int kKeywordModelPersistentBufferDataSize = 840;
+#endif
+
 // NOTE: These values are measured on x86-64:
 // TODO(b/158651472): Consider auditing these values on non-64 bit systems.
 #ifdef TF_LITE_STATIC_MEMORY
 // Total size contributed by the conv model excluding the
 // RecordingMicroAllocator's overhead
 // TODO(b/207157610): replace magic number that depends on OPs
-constexpr int kTestConvModelOnlyTotalSize = 9488;
+constexpr int kTestConvModelOnlyTotalSize = 9576;
 // Tail size contributed by the conv model excluding the
 // RecordingMicroAllocator's overhead
 // TODO(b/207157610): replace magic number that depends on OPs
-constexpr int kTestConvModelOnlyTailSize = 1744;
+constexpr int kTestConvModelOnlyTailSize = 1832;
 constexpr int kTestConvModelPersistentTfLiteTensorDataSize = 128;
-constexpr int kTestConvModelPersistentBufferDataSize = 728;
+constexpr int kTestConvModelPersistentBufferDataSize = 748;
 #else
 // Total size contributed by the conv model excluding the
 // RecordingMicroAllocator's overhead
 // TODO(b/207157610): replace magic number that depends on OPs
-constexpr int kTestConvModelOnlyTotalSize = 9760;
+constexpr int kTestConvModelOnlyTotalSize = 9832;
 // Tail size contributed by the conv model excluding the
 // RecordingMicroAllocator's overhead
 // TODO(b/207157610): replace magic number that depends on OPs
-constexpr int kTestConvModelOnlyTailSize = 2016;
+constexpr int kTestConvModelOnlyTailSize = 2088;
 constexpr int kTestConvModelPersistentTfLiteTensorDataSize = 224;
-constexpr int kTestConvModelPersistentBufferDataSize = 720;
+constexpr int kTestConvModelPersistentBufferDataSize = 740;
 #endif
 constexpr int kTestConvModelHeadSize = 7744;
 constexpr int kTestConvModelOpRuntimeDataSize = 136;
@@ -135,10 +140,6 @@ void EnsureAllocatedSizeThreshold(const char* allocation_type, size_t actual,
     // 64-bit systems should check floor and ceiling to catch memory savings:
     TF_LITE_MICRO_EXPECT_NEAR(actual, expected,
                               expected * kAllocationThreshold);
-    if (actual != expected) {
-      MicroPrintf("%s threshold failed: %d != %d", allocation_type, actual,
-                  expected);
-    }
   } else {
     // Non-64 bit systems should just expect allocation does not exceed the
     // ceiling:
@@ -221,9 +222,17 @@ void ValidateModelAllocationThresholds(
 TF_LITE_MICRO_TESTS_BEGIN
 
 TF_LITE_MICRO_TEST(TestKeywordModelMemoryThreshold) {
-  tflite::AllOpsResolver all_ops_resolver;
+  tflite::MicroMutableOpResolver<4> op_resolver;
+  TF_LITE_MICRO_EXPECT_EQ(
+      op_resolver.AddFullyConnected(tflite::Register_FULLY_CONNECTED_INT8()),
+      kTfLiteOk);
+  TF_LITE_MICRO_EXPECT_EQ(op_resolver.AddQuantize(), kTfLiteOk);
+  TF_LITE_MICRO_EXPECT_EQ(
+      op_resolver.AddSoftmax(tflite::Register_SOFTMAX_INT8_INT16()), kTfLiteOk);
+  TF_LITE_MICRO_EXPECT_EQ(op_resolver.AddSvdf(tflite::Register_SVDF_INT8()),
+                          kTfLiteOk);
   tflite::RecordingMicroInterpreter interpreter(
-      tflite::GetModel(g_keyword_scrambled_model_data), all_ops_resolver,
+      tflite::GetModel(g_keyword_scrambled_model_data), op_resolver,
       keyword_model_tensor_arena, kKeywordModelTensorArenaSize);
 
   interpreter.AllocateTensors();
@@ -253,10 +262,17 @@ TF_LITE_MICRO_TEST(TestKeywordModelMemoryThreshold) {
 }
 
 TF_LITE_MICRO_TEST(TestConvModelMemoryThreshold) {
-  tflite::AllOpsResolver all_ops_resolver;
+  tflite::MicroMutableOpResolver<6> op_resolver;
+  TF_LITE_MICRO_EXPECT_EQ(op_resolver.AddConv2D(), kTfLiteOk);
+  TF_LITE_MICRO_EXPECT_EQ(op_resolver.AddQuantize(), kTfLiteOk);
+  TF_LITE_MICRO_EXPECT_EQ(op_resolver.AddMaxPool2D(), kTfLiteOk);
+  TF_LITE_MICRO_EXPECT_EQ(op_resolver.AddReshape(), kTfLiteOk);
+  TF_LITE_MICRO_EXPECT_EQ(op_resolver.AddFullyConnected(), kTfLiteOk);
+  TF_LITE_MICRO_EXPECT_EQ(op_resolver.AddDequantize(), kTfLiteOk);
+
   tflite::RecordingMicroInterpreter interpreter(
-      tflite::GetModel(kTestConvModelData), all_ops_resolver,
-      test_conv_tensor_arena, kTestConvModelArenaSize);
+      tflite::GetModel(kTestConvModelData), op_resolver, test_conv_tensor_arena,
+      kTestConvModelArenaSize);
 
   interpreter.AllocateTensors();
 

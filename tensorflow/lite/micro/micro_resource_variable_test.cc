@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/lite/micro/micro_resource_variable.h"
 
 #include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/micro/micro_utils.h"
 #include "tensorflow/lite/micro/test_helpers.h"
 #include "tensorflow/lite/micro/testing/micro_test.h"
 
@@ -85,7 +86,7 @@ TF_LITE_MICRO_TEST(AllocateResourceBuffers) {
   int id2 = resource_variables->CreateIdIfNoneFound("", "var2");
   TF_LITE_MICRO_EXPECT_NE(id1, id2);
 
-  TfLiteTensor tensor;
+  TfLiteTensor tensor = {};
   tensor.bytes = 42;
   resource_variables->Allocate(id1, tflite::GetMockContext(), &tensor);
   TF_LITE_MICRO_EXPECT_EQ(42, tflite::last_allocation_size_);
@@ -104,7 +105,7 @@ TF_LITE_MICRO_TEST(VerifyAssignAndReadResourceBuffer) {
   int id = resource_variables->CreateIdIfNoneFound("", "var1");
   TF_LITE_MICRO_EXPECT_GE(id, 0);
 
-  TfLiteTensor tensor;
+  TfLiteTensor tensor = {};
   const int bytes = 32 * sizeof(int32_t);
   tensor.bytes = bytes;
   resource_variables->Allocate(id, tflite::GetMockContext(), &tensor);
@@ -120,7 +121,9 @@ TF_LITE_MICRO_TEST(VerifyAssignAndReadResourceBuffer) {
 
       .type = kTfLiteFloat32,
   };
-  resource_variables->Assign(id, &assign_tensor);
+  resource_variables->Assign(
+      id, tflite::EvalTensorBytes(&assign_tensor),
+      tflite::micro::GetTensorData<void>(&assign_tensor));
 
   int32_t buffer[32];
   TfLiteEvalTensor read_tensor = {

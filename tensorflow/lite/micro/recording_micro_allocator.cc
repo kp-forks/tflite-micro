@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -78,6 +78,12 @@ RecordedAllocation RecordingMicroAllocator::GetRecordedAllocation(
       return recorded_node_and_registration_array_data_;
     case RecordedAllocationType::kOpData:
       return recorded_op_data_;
+#ifdef USE_TFLM_COMPRESSION
+    case RecordedAllocationType::kCompressionData:
+      return recorded_compression_data_;
+#endif  // USE_TFLM_COMPRESSION
+    default:
+      break;
   }
   MicroPrintf("Invalid allocation type supplied: %d", allocation_type);
   return RecordedAllocation();
@@ -112,6 +118,13 @@ void RecordingMicroAllocator::PrintAllocations() const {
                           "NodeAndRegistration structs");
   PrintRecordedAllocation(RecordedAllocationType::kOpData,
                           "Operator runtime data", "OpData structs");
+
+#ifdef USE_TFLM_COMPRESSION
+
+  PrintRecordedAllocation(RecordedAllocationType::kCompressionData,
+                          "Persistent compression data", "allocations");
+
+#endif  // USE_TFLM_COMPRESSION
 }
 
 void* RecordingMicroAllocator::AllocatePersistentBuffer(size_t bytes) {
@@ -192,11 +205,12 @@ TfLiteStatus RecordingMicroAllocator::AllocateTfLiteEvalTensors(
 }
 
 TfLiteStatus RecordingMicroAllocator::AllocateVariables(
-    const SubGraph* subgraph, TfLiteEvalTensor* eval_tensors) {
+    const SubGraph* subgraph, TfLiteEvalTensor* eval_tensors,
+    const int32_t* offline_planner_offsets) {
   RecordedAllocation allocations = SnapshotAllocationUsage();
 
-  TfLiteStatus status =
-      MicroAllocator::AllocateVariables(subgraph, eval_tensors);
+  TfLiteStatus status = MicroAllocator::AllocateVariables(
+      subgraph, eval_tensors, offline_planner_offsets);
 
   RecordAllocationUsage(allocations,
                         recorded_tflite_tensor_variable_buffer_data_);
@@ -226,6 +240,21 @@ TfLiteStatus RecordingMicroAllocator::PopulateTfLiteTensorFromFlatbuffer(
                         recorded_persistent_tflite_tensor_quantization_data_);
   return status;
 }
+
+#ifdef USE_TFLM_COMPRESSION
+
+TfLiteStatus RecordingMicroAllocator::AllocateCompressedTensorsList(
+    const Model* model, SubgraphAllocations* subgraph_allocations) {
+  RecordedAllocation allocations = SnapshotAllocationUsage();
+
+  TfLiteStatus status = MicroAllocator::AllocateCompressedTensorsList(
+      model, subgraph_allocations);
+
+  RecordAllocationUsage(allocations, recorded_compression_data_);
+  return status;
+}
+
+#endif  // USE_TFLM_COMPRESSION
 
 RecordedAllocation RecordingMicroAllocator::SnapshotAllocationUsage() const {
   return {/*requested_bytes=*/recording_memory_allocator_->GetRequestedBytes(),

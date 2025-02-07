@@ -1,3 +1,4 @@
+load("@rules_python//python:defs.bzl", "py_binary")
 load("@tflm_pip_deps//:requirements.bzl", "requirement")
 
 package(
@@ -18,7 +19,6 @@ py_binary(
     deps = [
         "@absl_py//absl:app",
         "@absl_py//absl/flags",
-        requirement("tensorflow-cpu"),
         requirement("mako"),
         "//tensorflow/lite/python:schema_py",
         "//tensorflow/lite/python:schema_util",
@@ -42,7 +42,7 @@ py_binary(
     deps = [
         "@absl_py//absl:app",
         "@absl_py//absl/flags",
-        requirement("tensorflow-cpu"),
+        requirement("tensorflow"),
         requirement("mako"),
         "//tensorflow/lite/micro/tools:generate_test_for_model",
         "//tensorflow/lite/python:schema_py",

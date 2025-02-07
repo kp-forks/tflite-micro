@@ -1,4 +1,4 @@
-/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/lite/micro/test_helpers.h"
 
+#include <array>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -26,13 +27,18 @@ limitations under the License.
 #include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
-#include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/micro/kernels/kernel_util.h"
 #include "tensorflow/lite/micro/memory_helpers.h"
 #include "tensorflow/lite/micro/micro_arena_constants.h"
 #include "tensorflow/lite/micro/micro_utils.h"
 #include "tensorflow/lite/micro/test_helper_custom_ops.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+
+#ifdef USE_TFLM_COMPRESSION
+
+#include "tensorflow/lite/micro/compression/metadata_saved.h"
+
+#endif  // USE_TFLM_COMPRESSION
 
 // TODO(b/170464050): Use TFLM test only version of schema_utils.
 
@@ -237,7 +243,7 @@ const Model* ModelBuilder::BuildModel(
         *builder_, 0,
         builder_->CreateVector(operator_codes_, next_operator_code_id_),
         builder_->CreateVector(subgraphs, subgraphs_size),
-        builder_->CreateString("teset_model"),
+        builder_->CreateString("test_model"),
         builder_->CreateVector(buffers, buffer_size), 0,
         builder_->CreateVector(metadata_,
                                ModelBuilder::nbr_of_metadata_buffers_));
@@ -246,7 +252,7 @@ const Model* ModelBuilder::BuildModel(
         *builder_, 0,
         builder_->CreateVector(operator_codes_, next_operator_code_id_),
         builder_->CreateVector(subgraphs, subgraphs_size),
-        builder_->CreateString("teset_model"),
+        builder_->CreateString("test_model"),
         builder_->CreateVector(buffers, buffer_size));
   }
 
@@ -578,6 +584,117 @@ const Model* BuildSimpleMockModel() {
   const Model* model = flatbuffers::GetRoot<Model>(model_pointer);
   return model;
 }
+
+#ifdef USE_TFLM_COMPRESSION
+
+const flatbuffers::span<uint8_t> BuildLutMetadata(
+    uint32_t tensor_index, uint32_t value_table_buffer_index,
+    uint32_t bit_width) {
+  using flatbuffers::Offset;
+  namespace compression = tflite::micro::compression;
+
+  flatbuffers::FlatBufferBuilder* builder = BuilderInstance();
+
+  auto lut_tensor = compression::CreateLutTensor(
+      *builder, tensor_index, value_table_buffer_index, bit_width);
+  auto subgraph = compression::CreateSubgraph(
+      *builder, builder->CreateVector(&lut_tensor, 1));
+  constexpr uint32_t schema_version = 1;
+  auto metadata = compression::CreateMetadata(
+      *builder, schema_version, builder->CreateVector(&subgraph, 1));
+  compression::FinishMetadataBuffer(*builder, metadata);
+  return builder->GetBufferSpan();
+}
+
+const Model* BuildSimpleMockModelCompressed() {
+  using flatbuffers::Offset;
+  using flatbuffers::Vector;
+  using tflite::micro::compression::LutTensor;
+  constexpr uint32_t kEmptyBuffer = 0;
+  constexpr uint32_t kMetadataBuffer = 1;
+  constexpr uint32_t kWeightsBuffer = 2;
+  constexpr uint32_t kValueTableBuffer = 3;
+  // constexpr uint32_t kInputTensor = 0;
+  constexpr uint32_t kWeightsTensor = 1;
+  // constexpr uint32_t kOutputTensor = 2;
+  constexpr uint32_t kCompressedBitWidth = 4;
+
+  auto lut_tensors_span =
+      BuildLutMetadata(kWeightsTensor, kValueTableBuffer, kCompressedBitWidth);
+
+  flatbuffers::FlatBufferBuilder* builder = BuilderInstance();
+
+  // [1, 2, 3, 4, 5, -1, -2, -3, -4, -5, 1, 2, 3, 4, 5]
+  const std::initializer_list<uint8_t> weights_data = {0x01, 0x23, 0x45, 0x98,
+                                                       0x76, 0x01, 0x23, 0x40};
+  const std::initializer_list<int16_t> value_table_data = {1,  2,  3,  4,  5,
+                                                           -1, -5, -4, -3, -2};
+  auto value_table_offset = builder->CreateVector(value_table_data).o;
+  const std::initializer_list<Offset<Buffer>> buffers = {
+      CreateBuffer(*builder),
+      CreateBuffer(*builder, builder->CreateVector<uint8_t>(lut_tensors_span)),
+      CreateBuffer(*builder, builder->CreateVector(weights_data)),
+      CreateBuffer(*builder, Offset<Vector<uint8_t>>(value_table_offset)),
+  };
+
+  const std::initializer_list<int32_t> input_shape = {1};
+  const std::initializer_list<int32_t> weights_shape = {15};
+  const std::initializer_list<int32_t> output_shape = weights_shape;
+  const std::initializer_list<Offset<Tensor>> tensors = {
+      CreateTensor(*builder, builder->CreateVector(input_shape),
+                   TensorType_INT16, kEmptyBuffer,
+                   builder->CreateString("test_input_tensor"), 0, false),
+      CreateTensor(*builder, builder->CreateVector(weights_shape),
+                   TensorType_INT16, kWeightsBuffer,
+                   builder->CreateString("test_weight_tensor"), 0, false),
+      CreateTensor(*builder, builder->CreateVector(output_shape),
+                   TensorType_INT16, kEmptyBuffer,
+                   builder->CreateString("test_output_tensor"), 0, false),
+  };
+
+  const std::initializer_list<int32_t> subgraph_inputs = {0};
+  const std::initializer_list<int32_t> subgraph_outputs = {2};
+  const std::initializer_list<int32_t> operator_inputs = {0, 1};
+  const std::initializer_list<int32_t> operator_outputs = {2};
+  const std::initializer_list<Offset<Operator>> operators = {
+      CreateOperator(*builder, 0, builder->CreateVector(operator_inputs),
+                     builder->CreateVector(operator_outputs),
+                     BuiltinOptions_NONE),
+  };
+
+  const std::initializer_list<Offset<SubGraph>> subgraphs = {
+      CreateSubGraph(*builder, builder->CreateVector(tensors),
+                     builder->CreateVector(subgraph_inputs),
+                     builder->CreateVector(subgraph_outputs),
+                     builder->CreateVector(operators),
+                     builder->CreateString("test_subgraph")),
+  };
+
+  const std::initializer_list<Offset<OperatorCode>> operator_codes = {
+      CreateOperatorCodeDirect(*builder, /*deprecated_builtin_code=*/0,
+                               "broadcast_add_op",
+                               /*version=*/0, BuiltinOperator_CUSTOM),
+  };
+
+  const std::initializer_list<Offset<Metadata>> metadata = {
+      CreateMetadata(*builder,
+                     builder->CreateString(kCompressionMetadataString),
+                     kMetadataBuffer),
+  };
+
+  const Offset<Model> model_offset = CreateModel(
+      *builder, 0, builder->CreateVector(operator_codes),
+      builder->CreateVector(subgraphs), builder->CreateString("test_model"),
+      builder->CreateVector(buffers), 0, builder->CreateVector(metadata));
+
+  FinishModelBuffer(*builder, model_offset);
+  void* model_pointer = builder->GetBufferPointer();
+  const Model* model = flatbuffers::GetRoot<Model>(model_pointer);
+
+  return model;
+}
+
+#endif  // USE_TFLM_COMPRESSION
 
 const Model* BuildComplexMockModel() {
   using flatbuffers::Offset;
@@ -1431,12 +1548,12 @@ const Model* BuildSimpleMockModelWithNullInputsOutputs() {
 
 }  // namespace
 
-const TfLiteRegistration* SimpleStatefulOp::getRegistration() {
+const TFLMRegistration* SimpleStatefulOp::getRegistration() {
   return GetMutableRegistration();
 }
 
-TfLiteRegistration* SimpleStatefulOp::GetMutableRegistration() {
-  static TfLiteRegistration r;
+TFLMRegistration* SimpleStatefulOp::GetMutableRegistration() {
+  static TFLMRegistration r;
   r.init = Init;
   r.prepare = Prepare;
   r.invoke = Invoke;
@@ -1445,10 +1562,6 @@ TfLiteRegistration* SimpleStatefulOp::GetMutableRegistration() {
 
 void* SimpleStatefulOp::Init(TfLiteContext* context, const char* buffer,
                              size_t length) {
-  TFLITE_DCHECK(context->AllocateBufferForEval == nullptr);
-  TFLITE_DCHECK(context->GetScratchBuffer == nullptr);
-  TFLITE_DCHECK(context->RequestScratchBufferInArena == nullptr);
-
   void* raw = context->AllocatePersistentBuffer(context, sizeof(OpData));
   OpData* data = reinterpret_cast<OpData*>(raw);
   *data = {};
@@ -1521,12 +1634,12 @@ TfLiteStatus SimpleStatefulOp::Invoke(TfLiteContext* context,
   return kTfLiteOk;
 }
 
-const TfLiteRegistration* MockCustom::getRegistration() {
+const TFLMRegistration* MockCustom::getRegistration() {
   return GetMutableRegistration();
 }
 
-TfLiteRegistration* MockCustom::GetMutableRegistration() {
-  static TfLiteRegistration r;
+TFLMRegistration* MockCustom::GetMutableRegistration() {
+  static TFLMRegistration r;
   r.init = Init;
   r.prepare = Prepare;
   r.invoke = Invoke;
@@ -1569,12 +1682,12 @@ TfLiteStatus MockCustom::Invoke(TfLiteContext* context, TfLiteNode* node) {
 
 bool MockCustom::freed_ = false;
 
-const TfLiteRegistration* MultipleInputs::getRegistration() {
+const TFLMRegistration* MultipleInputs::getRegistration() {
   return GetMutableRegistration();
 }
 
-TfLiteRegistration* MultipleInputs::GetMutableRegistration() {
-  static TfLiteRegistration r;
+TFLMRegistration* MultipleInputs::GetMutableRegistration() {
+  static TFLMRegistration r;
   r.init = Init;
   r.prepare = Prepare;
   r.invoke = Invoke;
@@ -1624,12 +1737,12 @@ TfLiteStatus MultipleInputs::Invoke(TfLiteContext* context, TfLiteNode* node) {
 
 bool MultipleInputs::freed_ = false;
 
-const TfLiteRegistration* NoOp::getRegistration() {
+const TFLMRegistration* NoOp::getRegistration() {
   return GetMutableRegistration();
 }
 
-TfLiteRegistration* NoOp::GetMutableRegistration() {
-  static TfLiteRegistration r;
+TFLMRegistration* NoOp::GetMutableRegistration() {
+  static TFLMRegistration r;
   r.init = Init;
   r.prepare = Prepare;
   r.invoke = Invoke;
@@ -1658,16 +1771,22 @@ TfLiteStatus NoOp::Invoke(TfLiteContext* context, TfLiteNode* node) {
 
 bool NoOp::freed_ = false;
 
-AllOpsResolver GetOpResolver() {
-  AllOpsResolver op_resolver;
-  op_resolver.AddCustom("mock_custom", MockCustom::GetMutableRegistration());
-  op_resolver.AddCustom("simple_stateful_op",
-                        SimpleStatefulOp::GetMutableRegistration());
-  op_resolver.AddCustom("multiple_inputs_op",
-                        MultipleInputs::GetMutableRegistration());
-  op_resolver.AddCustom("no_op", NoOp::GetMutableRegistration());
-  op_resolver.AddCustom("custom_packer_op", PackerOp::GetMutableRegistration());
-  return op_resolver;
+TfLiteStatus GetTestingOpResolver(
+    tflite::testing::TestingOpResolver& op_resolver) {
+  TF_LITE_ENSURE_STATUS(op_resolver.AddCustom(
+      "mock_custom", MockCustom::GetMutableRegistration()));
+  TF_LITE_ENSURE_STATUS(op_resolver.AddCustom(
+      "simple_stateful_op", SimpleStatefulOp::GetMutableRegistration()));
+  TF_LITE_ENSURE_STATUS(op_resolver.AddCustom(
+      "multiple_inputs_op", MultipleInputs::GetMutableRegistration()));
+  TF_LITE_ENSURE_STATUS(
+      op_resolver.AddCustom("no_op", NoOp::GetMutableRegistration()));
+  TF_LITE_ENSURE_STATUS(op_resolver.AddCustom(
+      "custom_packer_op", PackerOp::GetMutableRegistration()));
+  TF_LITE_ENSURE_STATUS(op_resolver.AddCustom(
+      "broadcast_add_op", BroadcastAddOp::GetMutableRegistration()));
+  TF_LITE_ENSURE_STATUS(op_resolver.AddIf());
+  return kTfLiteOk;
 }
 
 const Model* GetModelWithUnusedInputs() {
@@ -1698,6 +1817,18 @@ const Model* GetSimpleMockModel() {
   }
   return model;
 }
+
+#ifdef USE_TFLM_COMPRESSION
+
+const Model* GetSimpleMockModelCompressed() {
+  static Model* model = nullptr;
+  if (!model) {
+    model = const_cast<Model*>(BuildSimpleMockModelCompressed());
+  }
+  return model;
+}
+
+#endif  // USE_TFLM_COMPRESSION
 
 const Model* GetSimpleMultipleInputsModel() {
   static Model* model = nullptr;
@@ -1877,8 +2008,8 @@ int TestStrcmp(const char* a, const char* b) {
 
 // Create a TfLiteIntArray from an array of ints.  The first element in the
 // supplied array must be the size of the array expressed as an int.
-TfLiteIntArray* IntArrayFromInts(int* int_array) {
-  return reinterpret_cast<TfLiteIntArray*>(int_array);
+TfLiteIntArray* IntArrayFromInts(const int* int_array) {
+  return reinterpret_cast<TfLiteIntArray*>(const_cast<int*>(int_array));
 }
 
 // Create a TfLiteFloatArray from an array of floats.  The first element in the
@@ -1889,100 +2020,6 @@ TfLiteFloatArray* FloatArrayFromFloats(const float* floats) {
   int size = static_cast<int>(floats[0]);
   *reinterpret_cast<int32_t*>(const_cast<float*>(floats)) = size;
   return reinterpret_cast<TfLiteFloatArray*>(const_cast<float*>(floats));
-}
-
-TfLiteTensor CreateQuantizedBiasTensor(const float* data, int16_t* quantized,
-                                       TfLiteIntArray* dims, float input_scale,
-                                       float weights_scale, bool is_variable) {
-  float bias_scale = input_scale * weights_scale;
-  tflite::SymmetricQuantize(data, quantized, ElementCount(*dims), bias_scale);
-
-  // Quantized int16_t tensors always have a zero point of 0, since the range of
-  // int16_t values is large, and because zero point costs extra cycles during
-  // processing.
-  TfLiteTensor result =
-      CreateQuantizedTensor(quantized, dims, bias_scale, 0, is_variable);
-  return result;
-}
-
-TfLiteTensor CreateQuantizedBiasTensor(const float* data, int32_t* quantized,
-                                       TfLiteIntArray* dims, float input_scale,
-                                       float weights_scale, bool is_variable) {
-  float bias_scale = input_scale * weights_scale;
-  tflite::SymmetricQuantize(data, quantized, ElementCount(*dims), bias_scale);
-
-  // Quantized int32_t tensors always have a zero point of 0, since the range of
-  // int32_t values is large, and because zero point costs extra cycles during
-  // processing.
-  TfLiteTensor result =
-      CreateQuantizedTensor(quantized, dims, bias_scale, 0, is_variable);
-  return result;
-}
-
-TfLiteTensor CreateQuantizedBiasTensor(const float* data,
-                                       std::int64_t* quantized,
-                                       TfLiteIntArray* dims, float input_scale,
-                                       float weights_scale, bool is_variable) {
-  float bias_scale = input_scale * weights_scale;
-  tflite::SymmetricQuantize(data, quantized, ElementCount(*dims), bias_scale);
-
-  // Quantized int32_t tensors always have a zero point of 0, since the range of
-  // int32_t values is large, and because zero point costs extra cycles during
-  // processing.
-  TfLiteTensor result =
-      CreateQuantizedTensor(quantized, dims, bias_scale, 0, is_variable);
-  return result;
-}
-
-// Quantizes int32_t bias tensor with per-channel weights determined by input
-// scale multiplied by weight scale for each channel.
-template <typename T>
-TfLiteTensor CreatePerChannelQuantizedBiasTensor(
-    const float* input, T* quantized, TfLiteIntArray* dims, float input_scale,
-    float* weight_scales, float* scales, int* zero_points,
-    TfLiteAffineQuantization* affine_quant, int quantized_dimension,
-    bool is_variable) {
-  int input_size = ElementCount(*dims);
-  int num_channels = dims->data[quantized_dimension];
-  // First element is reserved for array length
-  zero_points[0] = num_channels;
-  scales[0] = static_cast<float>(num_channels);
-  float* scales_array = &scales[1];
-  for (int i = 0; i < num_channels; i++) {
-    scales_array[i] = input_scale * weight_scales[i];
-    zero_points[i + 1] = 0;
-  }
-
-  SymmetricPerChannelQuantize<T>(input, quantized, input_size, num_channels,
-                                 scales_array);
-
-  affine_quant->scale = FloatArrayFromFloats(scales);
-  affine_quant->zero_point = IntArrayFromInts(zero_points);
-  affine_quant->quantized_dimension = quantized_dimension;
-
-  TfLiteTensor result = CreateTensor(quantized, dims, is_variable);
-  result.quantization = {kTfLiteAffineQuantization, affine_quant};
-  return result;
-}
-
-TfLiteTensor CreatePerChannelQuantizedBiasTensor(
-    const float* input, int32_t* quantized, TfLiteIntArray* dims,
-    float input_scale, float* weight_scales, float* scales, int* zero_points,
-    TfLiteAffineQuantization* affine_quant, int quantized_dimension,
-    bool is_variable) {
-  return CreatePerChannelQuantizedBiasTensor<int32_t>(
-      input, quantized, dims, input_scale, weight_scales, scales, zero_points,
-      affine_quant, quantized_dimension, is_variable);
-}
-
-TfLiteTensor CreatePerChannelQuantizedBiasTensor(
-    const float* input, std::int64_t* quantized, TfLiteIntArray* dims,
-    float input_scale, float* weight_scales, float* scales, int* zero_points,
-    TfLiteAffineQuantization* affine_quant, int quantized_dimension,
-    bool is_variable) {
-  return CreatePerChannelQuantizedBiasTensor<std::int64_t>(
-      input, quantized, dims, input_scale, weight_scales, scales, zero_points,
-      affine_quant, quantized_dimension, is_variable);
 }
 
 TfLiteTensor CreateSymmetricPerChannelQuantizedTensor(

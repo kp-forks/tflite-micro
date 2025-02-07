@@ -1,4 +1,4 @@
-/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2024 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,45 +20,54 @@ limitations under the License.
 #include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/kernels/internal/common.h"
+#include "tensorflow/lite/kernels/internal/portable_tensor_utils.h"
+#include "tensorflow/lite/kernels/internal/reference/integer_ops/conv.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/micro/kernels/conv.h"
 #include "tensorflow/lite/micro/kernels/kernel_util.h"
 #include "tensorflow/lite/micro/kernels/xtensa/xtensa.h"
 #include "tensorflow/lite/micro/kernels/xtensa/xtensa_conv.h"
+#include "tensorflow/lite/micro/micro_arena_constants.h"
 
 namespace tflite {
 
 TfLiteStatus ConvPrepareVision(TfLiteContext* context, TfLiteNode* node) {
-  TFLITE_DCHECK(node->user_data != nullptr);
-  TFLITE_DCHECK(node->builtin_data != nullptr);
+  MicroContext* micro_context = GetMicroContext(context);
+  TfLiteTensor* input =
+      micro_context->AllocateTempInputTensor(node, kConvInputTensor);
+  TF_LITE_ENSURE(context, input != nullptr);
+  TfLiteTensor* bias =
+      micro_context->AllocateTempInputTensor(node, kConvBiasTensor);
+  TF_LITE_ENSURE(context, bias != nullptr);
+  const uint32_t input_height = SizeOfDimension(input, 1);
+  const uint32_t input_width = SizeOfDimension(input, 2);
 
   XtensaConvOpData* data = reinterpret_cast<XtensaConvOpData*>(node->user_data);
   const auto& params =
       *(reinterpret_cast<const TfLiteConvParams*>(node->builtin_data));
 
-  MicroContext* micro_context = GetMicroContext(context);
   TfLiteTensor* output =
       micro_context->AllocateTempOutputTensor(node, kConvOutputTensor);
   TF_LITE_ENSURE(context, output != nullptr);
-  TfLiteTensor* input =
-      micro_context->AllocateTempInputTensor(node, kConvInputTensor);
-  TF_LITE_ENSURE(context, input != nullptr);
   TfLiteTensor* filter =
       micro_context->AllocateTempInputTensor(node, kConvWeightsTensor);
   TF_LITE_ENSURE(context, filter != nullptr);
-  TfLiteTensor* bias =
-      micro_context->AllocateTempInputTensor(node, kConvBiasTensor);
-  TF_LITE_ENSURE(context, bias != nullptr);
-
-  const uint32_t input_height = SizeOfDimension(input, 1);
-  const uint32_t input_width = SizeOfDimension(input, 2);
 
   const uint32_t output_height = SizeOfDimension(output, 1);
   const uint32_t output_width = SizeOfDimension(output, 2);
 
   const uint32_t filter_height = SizeOfDimension(filter, 1);
   const uint32_t filter_width = SizeOfDimension(filter, 2);
+
+  // At this time it is unclear if per channel quantization is correctly
+  // supported by the optimized vision P6 implementation or not. For now, we are
+  // manually adding a flag to switch to the reference implementation for
+  // per-channel conv.
+  // See http://b/270720625 for more details.
+  data->is_per_channel_quantized =
+      reinterpret_cast<TfLiteAffineQuantization*>(filter->quantization.params)
+          ->scale->size > 1;
 
   // Dynamically allocate per-channel quantization parameters.
   const int num_channels = SizeOfDimension(filter, kConvQuantizedDimension);
@@ -84,6 +93,72 @@ TfLiteStatus ConvPrepareVision(TfLiteContext* context, TfLiteNode* node) {
 
   const uint32_t input_depth = SizeOfDimension(input, 3);
   const uint32_t output_depth = SizeOfDimension(output, 3);
+  TfLiteTensor filter_int8;
+
+  if (filter->type == kTfLiteInt4) {
+    const size_t bytes_unpacked = filter->bytes * 2;
+    filter_int8.data.data = micro_context->AllocateTempBuffer(
+        bytes_unpacked, tflite::MicroArenaBufferAlignment());
+    filter_int8.dims = filter->dims;
+    filter_int8.type = kTfLiteInt8;
+    tflite::tensor_utils::UnpackDenseInt4IntoInt8(
+        GetTensorData<int8_t>(filter), GetTensorShape(filter).FlatSize(),
+        GetTensorData<int8_t>(&filter_int8));
+  } else {
+    filter_int8 = *filter;
+  }
+
+#ifdef USE_TFLM_COMPRESSION
+
+  uint8_t* filter_data = nullptr;
+  int32_t* bias_data = nullptr;
+
+  const CompressionTensorData* filter_comp_td =
+      micro_context->GetTensorCompressionData(node, kConvWeightsTensor);
+  if (filter_comp_td != nullptr) {
+    const size_t filter_data_size =
+        NumElements(&filter_int8) * TfLiteTypeGetSize(kTfLiteInt8);
+    filter_data =
+        micro_context->AllocateTempBuffer(filter_data_size, sizeof(int8_t));
+    if (filter_data == nullptr) {
+      return kTfLiteError;
+    }
+    const TfLiteEvalTensor* filter_eval =
+        tflite::micro::GetEvalInput(context, node, kConvWeightsTensor);
+    filter_data = static_cast<uint8_t*>(micro_context->DecompressTensorToBuffer(
+        *filter_eval, *filter_comp_td, filter_data));
+  } else {
+    filter_data = GetTensorData<uint8_t>(&filter_int8);
+  }
+
+  const CompressionTensorData* bias_comp_td =
+      micro_context->GetTensorCompressionData(node, kConvBiasTensor);
+  if (bias_comp_td != nullptr) {
+    const size_t bias_data_size =
+        NumElements(bias) * TfLiteTypeGetSize(kTfLiteInt32);
+    bias_data = reinterpret_cast<int32_t*>(
+        micro_context->AllocateTempBuffer(bias_data_size, sizeof(int32_t)));
+    if (bias_data == nullptr) {
+      return kTfLiteError;
+    }
+    const TfLiteEvalTensor* bias_eval =
+        tflite::micro::GetEvalInput(context, node, kConvBiasTensor);
+    bias_data = static_cast<int32_t*>(micro_context->DecompressTensorToBuffer(
+        *bias_eval, *bias_comp_td, bias_data));
+  } else {
+    bias_data = GetTensorData<int32_t>(bias);
+  }
+
+  if (filter_data == nullptr || bias_data == nullptr) {
+    return kTfLiteError;
+  }
+
+#else  // USE_TFLM_COMPRESSION
+
+  uint8_t* filter_data = GetTensorData<uint8_t>(&filter_int8);
+  int32_t* bias_data = GetTensorData<int32_t>(bias);
+
+#endif  // USE_TFLM_COMPRESSION
 
   status = xiConvSetContext(
       data->p_context, data->context_size, input_depth, input_width,
@@ -93,8 +168,7 @@ TfLiteStatus ConvPrepareVision(TfLiteContext* context, TfLiteNode* node) {
       data->reference_op_data.output_multiplier,
       data->reference_op_data.output_shift,
       data->reference_op_data.output_activation_min,
-      data->reference_op_data.output_activation_max,
-      (uint8_t*)GetTensorData<uint8_t>(filter),
+      data->reference_op_data.output_activation_max, filter_data,
       data->reference_op_data.padding.width,
       data->reference_op_data.padding.height);
   if (status) {
@@ -119,18 +193,30 @@ TfLiteStatus ConvPrepareVision(TfLiteContext* context, TfLiteNode* node) {
   status = xiConvDoCoeffReorder(
       data->p_context, data->context_size,
       reinterpret_cast<uint8_t*>(data->reorder_coefficient_bias),
-      data->reorder_coefficient_bias_size,
-      const_cast<uint8_t*>(GetTensorData<uint8_t>(filter)),
-      const_cast<int32_t*>(GetTensorData<int32_t>(bias)));
+      data->reorder_coefficient_bias_size, filter_data, bias_data);
   if (status) {
     return kTfLiteError;
   }
+
+  if (filter->type == kTfLiteInt4) {
+    micro_context->DeallocateTempBuffer(GetTensorData<uint8_t>(&filter_int8));
+  }
+
+#ifdef USE_TFLM_COMPRESSION
+
+  if (filter_comp_td) {
+    micro_context->DeallocateTempBuffer(filter_data);
+  }
+  if (bias_comp_td) {
+    micro_context->DeallocateTempBuffer(reinterpret_cast<uint8_t*>(bias_data));
+  }
+
+#endif  // USE_TFLM_COMPRESSION
 
   micro_context->DeallocateTempTfLiteTensor(output);
   micro_context->DeallocateTempTfLiteTensor(input);
   micro_context->DeallocateTempTfLiteTensor(filter);
   micro_context->DeallocateTempTfLiteTensor(bias);
-
   return kTfLiteOk;
 }
 
@@ -151,7 +237,9 @@ TfLiteStatus ConvEvalVision(TfLiteContext* context, TfLiteNode* node,
          data.reorder_coefficient_bias, data.reorder_coefficient_bias_size,
          data.reference_op_data.per_channel_output_multiplier,
          data.per_channel_output_shift_int8, num_channels);
+
   return kTfLiteOk;
 }
+
 }  // namespace tflite
 #endif  // defined(VISION_P6)
